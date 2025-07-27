@@ -1,0 +1,73 @@
+library(readxl)
+library(ggplot2)
+library(ggsignif)
+library(pheatmap)
+library(dplyr)
+library(tidyr)
+library(ropls)
+library(caret)
+library(ggvenn)
+library(VennDiagram)
+library(ComplexHeatmap)
+faeces_metabolism<- read_excel("G:/crc_wl/MWY-23-1218-13-a9个样本医学TM广靶代谢组结题报告_2024-03-19-13-48-40/MWY-23-1218-13-a_2024-03-19-13-48-40/1.Data_Assess/all_group/ALL_sample_data.xlsx")%>%data.frame()
+used_metabolism<- faeces_metabolism[,c(14:25)]
+rownames(used_metabolism)<- faeces_metabolism$Index
+qc<- used_metabolism[,grep("QC",colnames(used_metabolism))]
+RSD <- data.frame(rsd=apply(qc,1,sd)/apply(qc,1,mean))
+RSD_filterd <- subset(RSD,RSD$rsd< 0.2)
+log_faeces<- log2(used_metabolism[,-c(ncol(used_metabolism)-2,ncol(used_metabolism)-1,ncol(used_metabolism))])
+log_faeces<- log_faeces[rownames(log_faeces)%in%rownames(RSD_filterd),]
+negative_meta<-  faeces_metabolism %>% filter(grepl("negative", Mode))
+positive_meta<-  faeces_metabolism %>% filter(grepl("positive", Mode))
+pca_faeces_normal<- t(scale(log_faeces))
+seqion_faeces_normal<- data.frame(ID=rownames(pca_faeces_normal))
+seqion_faeces_normal<- separate(seqion_faeces_normal,ID,c("Group","Rep"),sep = "_")
+faeces_normal_plsda <- opls(pca_faeces_normal, seqion_faeces_normal$Group, orthoI = 0)#不指定或orthoI = 0时，执行PLS
+
+faeces_normal_pca <- as.data.frame(faeces_normal_plsda@scoreMN)
+faeces_normal_pca$group = row.names(faeces_normal_pca)
+faeces_normal_pca<- separate(faeces_normal_pca,group,c("class","Rep"),sep = "_",remove = F)
+x_lab <- faeces_normal_plsda@modelDF[1, "R2X"] * 100
+y_lab <- faeces_normal_plsda@modelDF[2, "R2X"] * 100
+
+ggplot(faeces_normal_pca,aes(p1,p2,color=class))+
+  geom_point(size=3)+
+  labs(x="PC1", y = "PC2")+theme_classic()+
+  theme(legend.position = "none",
+        axis.text.x = element_text(size=12),
+        axis.text.y = element_text(size=12),
+        axis.title = element_text(size=15))+
+  scale_color_manual(values = c("#BB849E","#8C90C8","black")) +
+  scale_fill_manual(values = c("#BB849E","#8C90C8","black")) +
+  labs(x=paste0("PCoA1 (",x_lab,"%)"),
+       y=paste0("PCoA2 (",y_lab,"%)"))+
+  stat_ellipse (data=faeces_normal_pca,
+                geom = "polygon",level = 0.95,
+                linetype = 2,size=1,
+                aes(fill=class),
+                alpha=0.2)
+vad<- used_metabolism[rownames(used_metabolism)=="MEDP0334",]
+df_vad <- vad %>%
+  rownames_to_column("Metabolite") %>%
+  pivot_longer(cols = -Metabolite, names_to = "Sample", values_to = "Value") %>%
+  mutate(Group = gsub("_\\d+", "", Sample))
+df_summary <- df_vad %>%
+  group_by(Group) %>%
+  summarise(
+    mean = mean(Value, na.rm = TRUE),
+    sd = sd(Value, na.rm = TRUE)
+  )
+df_summary$Group<- factor(df_summary$Group,levels = c("M","E","J"))
+
+# 画柱状图 + error bar
+ggplot(df_summary[c(1:3),], aes(x = Group, y = mean, fill = Group)) +
+  geom_bar(stat = "identity", width = 0.6, color = "black") +
+  geom_errorbar(aes(ymin = mean - sd, ymax = mean + sd),
+                width = 0.2) +
+  labs(
+    title = paste("Vanillic acid", "abundance by group"),
+    y = "Relative Abundance",
+    x = "Group"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
