@@ -1,0 +1,158 @@
+library(limma)
+library(dplyr)
+library(reshape2)
+library(tidyverse)
+library(vegan)
+library(ape)
+library(mixOmics)
+library(ggsignif)
+library(magrittr)
+library(tidyr)
+library(foreach)
+library(Hmisc)
+library(igraph)
+
+
+
+
+count_species<- read.delim("G:/crc_wl/1/species_abundance1.txt",row.names = 1 ,header=T)
+sampleInfo <- strsplit2(colnames(count_species),"[.]") %>%as.data.frame()
+sampleInfo<- separate(sampleInfo,V1,c("Group","Rep"),sep = "[.]")
+otu_order<- count_species
+rownames(sampleInfo) <- colnames(count_species)
+Transp_otu <- t(otu_order )
+
+
+# 计算OTUs数量
+calculate_otus <- function(x) {
+  otus <- rowSums(x > 0)
+  return(otus)
+}
+
+# 手动计算Shannon指数
+calculate_shannon <- function(x) {
+  total <- rowSums(x)
+  p <- x / total
+  p[p == 0] <- NA  # 避免log(0)的问题
+  shannon <- -rowSums(p * log(p), na.rm = TRUE)
+  return(shannon)
+}
+
+# 手动计算Simpson指数
+calculate_simpson <- function(x) {
+  total <- rowSums(x)
+  p <- x / total
+  simpson <- 1 - rowSums(p^2)
+  return(simpson)
+}
+
+# 计算Chao1指数
+calculate_chao1 <- function(x) {
+  singletons <- rowSums(x == 1)
+  doubletons <- rowSums(x == 2)
+  S_obs <- rowSums(x > 0)
+  chao1 <- S_obs + singletons^2 / (2 * doubletons)
+  chao1[is.na(chao1)] <- S_obs[is.na(chao1)]  # 处理分母为0的情况
+  return(chao1)
+}
+
+# 计算ACE指数
+calculate_ace <- function(x) {
+  S_obs <- rowSums(x > 0)
+  singletons <- rowSums(x == 1)
+  doubletons <- rowSums(x == 2)
+  abund <- x[x > 10]
+  abund <- sum(abund)
+  rare <- x[x <= 10 & x > 0]
+  rare <- sum(rare)
+  ace <- S_obs + (singletons / abund) * rare
+  return(ace)
+}
+
+# 计算所有指数并合成数据框
+calculate_alpha_diversity <- function(x) {
+  otus <- calculate_otus(x)
+  Shannon <- calculate_shannon(x)
+  Simpson <- calculate_simpson(x)
+  Chao1 <- calculate_chao1(x)
+  ACE <- calculate_ace(x)
+  
+  result <- data.frame(
+    OTUs = otus,
+    Shannon = Shannon,
+    Simpson = Simpson,
+    Chao1 = Chao1,
+    ACE = ACE
+  )
+  
+  return(result)
+}
+
+# 假设Transp_otu是输入的OTU表
+# Transp_otu <- t(otu_order)
+# 转置后的表（样本在行，OTU在列）
+
+
+# 计算α多样性指数并合成数据框
+alpha_diversity_df <- calculate_alpha_diversity(Transp_otu)
+
+alpha_diversity_df<- cbind(sampleInfo$Group,alpha_diversity_df)
+
+colnames(alpha_diversity_df)[1]<- "Group"
+
+
+
+
+alpha_diversity1_long<- alpha_diversity_df %>% gather(key = "Index",value = "value", -"Group")%>%
+  as.data.frame(.)
+alpha_diversity1_long$value<- as.numeric(alpha_diversity1_long$value)
+alpha_diversity1_long$Group<- factor(alpha_diversity1_long$Group,levels = c("X3","X2","X1"))
+
+
+
+ggplot(alpha_diversity1_long[alpha_diversity1_long$Index=="Chao1",], aes(x = Group, y = value,color=Group)) +
+  geom_boxplot(outliers = FALSE) +ggsignif::geom_signif(comparisons = list(c("X2","X1"),c("X3","X1")),step_increase = 0.1) +
+  scale_color_manual(values =c("black","#8C90C8","#BB849E"))+
+  theme_classic() +
+  labs(title = "Alpha Diversity Indices",
+       x = "Diversity Index",
+       y = "Value") +
+  theme(axis.text.x = element_blank(),legend.position = "")
+
+
+
+bray<-vegdist(t(otu_order),method="bray")
+bray<-as.matrix(bray)
+bray_df <- as.data.frame(as.matrix(bray))
+pcoa <- cmdscale(bray, k = 2, eig = TRUE)
+pcoa_coords <- as.data.frame(pcoa$points)
+colnames(pcoa_coords) <- c("PCoA1", "PCoA2")
+pcoa_coords<- cbind(pcoa_coords,sampleInfo)
+# 计算每个PC解释的变异百分比
+eigenvalues <- pcoa$eig
+variance_explained <- eigenvalues / sum(eigenvalues) * 100
+
+# 打印每个PC解释的变异百分比
+print(variance_explained)
+
+# 使用 ggplot2 绘制 PCoA 图，并在标签中包含变异百分比
+ggplot(pcoa_coords, aes(x = PCoA1, y = PCoA2, color = Group)) +
+  geom_point(size = 4)  +
+  labs(
+    title = "PCoA on Species Level",
+    x = paste0("PCoA1 (", round(variance_explained[1], 2), "%)"),
+    y = paste0("PCoA2 (", round(variance_explained[2], 2), "%)")
+  ) +
+  scale_color_manual(values = c("#BB849E","#8C90C8","black")) +
+  scale_fill_manual(values = c("#BB849E","#8C90C8","black")) +
+  stat_ellipse (data=pcoa_coords,
+                geom = "polygon",level = 0.95,
+                linetype = 2,size=1,
+                aes(fill=Group),
+                alpha=0.2)+
+  theme_classic()+
+  theme(legend.position = "none", 
+        plot.title = element_text(size = 18),
+        axis.title = element_text(size = 15),
+        axis.text = element_text(size = 12)
+  )
