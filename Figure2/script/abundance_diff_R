@@ -1,0 +1,176 @@
+library(microeco)
+library(dplyr)
+library(ggplot2)
+library(magrittr)
+library(agricolae)
+library(Rmisc)
+library(Hmisc)
+library(tidyr)
+library(ggbeeswarm)
+library(ggpubr)
+library(stringr)
+library(reshape2)
+library(ape)
+library(ggtree)
+library(tidyverse)
+otu_sperm<- read.table("G:/crc_wl/all_abundance.csv",sep = "\t",header = T)
+otu_sperm<- otu_sperm[grep("Bacteria",otu_sperm$taxonomy),]
+otu_sperm_used<- otu_sperm
+otu_sperm_used$OTU.ID<- paste("OTU",otu_sperm_used$OTU.ID,sep = "_")
+row.names(otu_sperm_used)<- otu_sperm_used$OTU.ID
+otu_sperm_used<- otu_sperm_used[-c(1,26)]
+
+taxonomy_table<- otu_sperm[,c(1,26)] 
+taxonomy_table$OTU.ID<- paste("OTU",taxonomy_table$OTU.ID,sep = "_")
+rownames(taxonomy_table)<- taxonomy_table$OTU.ID
+taxonomy_table<- separate(taxonomy_table,"taxonomy"
+                          ,c("Kingdom","Phylum","Class","Order","Family","Genus","Species"),
+                          sep = ";")
+taxonomy_table<- taxonomy_table[,-1]
+taxonomy_table$strain<- paste(taxonomy_table$Genus,taxonomy_table$Species,sep = " ")
+
+taxonomy_table$strain<- gsub("s__","",taxonomy_table$strain)
+taxonomy_table$strain<- gsub("g__","s__",taxonomy_table$strain)
+taxonomy_table$Species<- taxonomy_table$strain
+taxonomy_table$strain<- NULL
+taxonomy_table <- tidy_taxonomy(taxonomy_table)
+
+
+sample_info<- data.frame(ID=colnames(otu_sperm_used))
+sample_info<- separate(sample_info,ID,c("Class","Rep"),sep = "[.]",remove = F)
+rownames(sample_info)<- sample_info$ID
+rownames(otu_sperm)<- otu_sperm$OTU.ID
+dataset <- microtable$new(sample_table=sample_info,
+                          otu_table =otu_sperm_used,
+                          tax_table=taxonomy_table)
+dataset$sample_sums()%>% range
+dataset$rarefy_samples(sample.size=  8698077)
+dataset$cal_abund()
+
+t1<- trans_abund$new(dataset= dataset,taxrank = "Species" )
+Speicies_abundance<- t1$data_abund
+Speicies_abundance$Taxonomy<- sub("^\\s", "", Speicies_abundance$Taxonomy)
+df_Speicies_abundance <- pivot_wider(Speicies_abundance[,c(1:3)], 
+                       names_from = Taxonomy,
+                       values_from = Abundance)%>%data.frame()
+rownames(df_Speicies_abundance)<- df_Speicies_abundance$Sample
+df_Speicies_abundance<- df_Speicies_abundance[,-1]
+
+
+t4<- trans_diff$new(dataset = dataset,method ="lefse",group = "Class",alpha = 0.05,
+                    lefse_subgroup =   NULL,p_adjust_method = "none")
+t4$plot_diff_bar(use_number=1:30,width=0.6)
+group_colors <- c("X1" = "#B48098", "X2" = "#868BBF", "X3" = "black")
+t4$plot_diff_cladogram(use_taxa_num=200,use_feature_num = 40,
+                       clade_label_level=5,group_order = c("X1", "X2", "X3"))
+ t4$plot_diff_cladogram(
+  use_taxa_num = 200,     # 要绘制的分类单元数量
+  use_feature_num = 50,   # 要绘制的特征数量
+  clade_label_level = 1,  # 要显示的分类标签级别
+  group_order = c("X1", "X2", "X3")  # 组的顺序
+)
+
+
+species_diff<- t4$res_diff
+species_diff<- species_diff[grep("s_",rownames(species_diff)),]
+species_diff<- separate(species_diff,Taxa,c("Kingdom","Phylum","Class","Order","Family","Genus","Species"),sep = "[|]")
+species_diff$Species<- gsub("s__","",species_diff$Species)
+species_diff$Species<- sub("^\\s", "",species_diff$Species)
+sorted_df <- species_diff %>%
+  group_by(Group) %>%
+  arrange(desc(LDA))
+split_df <- split(sorted_df, sorted_df$Group)
+x1<- split_df$X1
+x2<- split_df$X2
+x3<- split_df$X3
+x1_diff<- Speicies_abundance[Speicies_abundance$Taxonomy%in%x1$Species,]
+x2_diff<- Speicies_abundance[Speicies_abundance$Taxonomy%in%x2$Species,]
+x3_diff<- Speicies_abundance[Speicies_abundance$Taxonomy%in%x3$Species,]
+
+
+
+cc<- rcorr(t(Speicies_abundance), type="spearman")
+cor_matrix <- as.data.frame(as.table(cc$r))
+p_matrix <- as.data.frame(as.table(cc$P))
+merged_matrix <- merge(cor_matrix, p_matrix, by = c("Var1", "Var2"), all = TRUE)
+merged_matrix$Freq.y[is.na(merged_matrix$Freq.y)] <- 0
+merged_matrix<- merged_matrix[merged_matrix$Freq.y<0.05,]%>%na.omit()%>%as.data.frame()
+
+
+
+merged_matrix<- merged_matrix[!grepl("GGB",merged_matrix$Var1),]
+merged_matrix<- merged_matrix[!grepl("GGB",merged_matrix$Var2),]
+
+
+
+colnames(merged_matrix)<- c("strain1","strain2","Correlation","Pvalue")
+merged_matrix1<- merged_matrix[abs(merged_matrix$Correlation)>0.4,]
+merged_matrix2<- merged_matrix[merged_matrix$strain1!="Lactobacillus_johnsonii",]
+p_s<- read.table("G:/crc_wl/abundance/p_s.txt",header = F)
+colnames(p_s)<- c("Plym","strain1")
+merged_matrix<- merge(merged_matrix,p_s,by="strain1")
+merged_matrix$Plym<- gsub("Candidatus_Saccharibacteria","Saccharibacteria",merged_matrix$Plym)
+
+
+
+plot<- distinct(merged_matrix)
+plot<- plot[plot$Correlation!=1,]
+plot<- plot[!grepl("GGB",plot$strain1),]
+data_nodes <- unique(c(plot$strain1, plot$ljoh))
+
+# 检查是否有额外的节点名称
+extra_nodes <- setdiff(data_nodes, unique(plot$strain1))
+print(extra_nodes)
+
+
+# 创建图对象
+g <- graph_from_data_frame(plot, directed = FALSE,vertices = NULL)
+
+# 检查图对象
+print(g)
+plot.igraph(g)
+# 设置节点颜色根据 Plym
+plym_colors <- c("Firmicutes" = "#AAB8AB", "Actinobacteria" = "#8B7F8B", "Bacteria_unclassified" = "#9D5A16", "Bacteroidota" ="#CC5F5A", "Proteobacteria" = "#E6C786")
+V(g)$color <- plym_colors[as.character(plot$Plym[match(V(g)$name, plot$strain1)])]
+
+# 检查匹配是否产生了 NA 值并移除 NA 节点
+matched_indices <- match(V(g)$name, plot$strain1)
+na_indices <- which(is.na(matched_indices))
+if (length(na_indices) > 0) {
+  warning("Some vertices could not be matched to the data and will be removed")
+  print(V(g)$name[na_indices])
+  g <- delete.vertices(g, V(g)$name[na_indices])
+}
+
+matched_indices <- match(V(g)$name, plot$strain1)
+
+# 设置节点大小根据 Correlation 的绝对值，处理 NA 值
+V(g)$size <- abs(plot$Correlation[matched_indices])
+V(g)$size[is.na(V(g)$size)] <- min(V(g)$size, na.rm = TRUE)  # 将 NA 值设置为最小的非 NA 值
+V(g)$size <- V(g)$size * 10  # 放大10倍，便于可视化
+
+# 确保边的宽度和颜色没有 NA 值
+# 获取所有边的起点和终点
+edge_from_to <- apply(ends(g, E(g)), 1, paste, collapse = "|")
+plot_edges <- paste(plot$strain1, plot$ljoh, sep = "|")
+edge_indices <- match(edge_from_to, plot_edges)
+
+# 确保没有 NA 值
+valid_edges <- !is.na(edge_indices)
+E(g)$color <- ifelse(plot$Correlation[edge_indices] > 0, "blue", "red")[valid_edges]
+E(g)$width <- -log10(plot$Pvalue[edge_indices]) * 2  # 放大2倍，便于可视化
+E(g)$width[is.na(E(g)$width)] <- 1
+E(g)$color[is.na(E(g)$color)] <- "black"
+
+# 生成布局
+layout <- layout_with_fr(g)
+
+# 检查布局
+print(layout)
+
+# 绘制图形
+plot.igraph(g, layout = layout, vertex.label = V(g)$name, vertex.label.cex = 0.7, vertex.label.color = "black", 
+            vertex.color = V(g)$color, vertex.frame.color = "black", vertex.size = V(g)$size,
+            edge.arrow.size = 0, edge.width = E(g)$width, edge.color = E(g)$color, edge.curved = TRUE)
+
+
