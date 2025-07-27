@@ -1,1 +1,469 @@
+library(readxl)
+library(ggplot2)
+library(ggsignif)
+library(pheatmap)
+library(dplyr)
+library(tidyr)
+library(ropls)
+library(caret)
+library(ggvenn)
+library(VennDiagram)
+library(ComplexHeatmap)
+faeces_metabolism<- read_excel("G:/crc_wl/MWY-23-1218-11-a24个样本医学TM广靶代谢组结题报告_2024-03-22-10-23-13/1.Data_Assess/all_group/ALL_sample_data.xlsx")%>%data.frame()
+used_metabolism<- faeces_metabolism[,c(14:40)]
+rownames(used_metabolism)<- faeces_metabolism$Index
+qc<- used_metabolism[,grep("QC",colnames(used_metabolism))]
+RSD <- data.frame(rsd=apply(qc,1,sd)/apply(qc,1,mean))
+RSD_filterd <- subset(RSD,RSD$rsd< 0.2)
+log_faeces<- log2(used_metabolism[,-c(ncol(used_metabolism)-2,ncol(used_metabolism)-1,ncol(used_metabolism))])
+log_faeces<- log_faeces[rownames(log_faeces)%in%rownames(RSD_filterd),]
 
+pca_faeces_normal<- t(scale(log_faeces))
+seqion_faeces_normal<- data.frame(ID=rownames(pca_faeces_normal))
+seqion_faeces_normal<- separate(seqion_faeces_normal,ID,c("Group","Rep"),sep = "_")
+faeces_normal_plsda <- opls(pca_faeces_normal, seqion_faeces_normal$Group, orthoI = 0)#不指定或orthoI = 0时，执行PLS
+
+faeces_normal_pca <- as.data.frame(faeces_normal_plsda@scoreMN)
+faeces_normal_pca$group = row.names(faeces_normal_pca)
+faeces_normal_pca<- separate(faeces_normal_pca,group,c("class","Rep"),sep = "_",remove = F)
+x_lab <- faeces_normal_plsda@modelDF[1, "R2X"] * 100
+y_lab <- faeces_normal_plsda@modelDF[2, "R2X"] * 100
+
+ggplot(faeces_normal_pca,aes(p1,p2,color=class))+
+  geom_point(size=3)+
+  labs(x="PC1", y = "PC2")+theme_classic()+
+  theme(legend.position = "none",
+        axis.text.x = element_text(size=12),
+        axis.text.y = element_text(size=12),
+        axis.title = element_text(size=15))+
+  scale_color_manual(values = c("#BB849E","#8C90C8","black")) +
+  scale_fill_manual(values = c("#BB849E","#8C90C8","black")) +
+  labs(x=paste0("PCoA1 (",x_lab,"%)"),
+       y=paste0("PCoA2 (",y_lab,"%)"))+
+  stat_ellipse (data=faeces_normal_pca,
+                geom = "polygon",level = 0.95,
+                linetype = 1,size=1,
+                aes(fill=class),
+                alpha=0.2)
+
+
+DEM_used<- used_metabolism[,-c(ncol(used_metabolism)-2,ncol(used_metabolism)-1,ncol(used_metabolism))]
+Group<-  data.frame(ID=colnames(DEM_used))
+Group<- separate(Group,ID,c("group","Rep"),sep = "_",remove = F)
+meanbygroup<-  data.frame(t(apply(DEM_used,1,function(a){tapply(a,Group$group,mean)})))
+meanbygroup$max<- apply(meanbygroup[,c(1:3)],
+                        1, 
+                        function(t) colnames(meanbygroup)[which.max(t)])
+
+faeces_B_P<- DEM_used[,c(1:16)]
+faeces_B_C<- DEM_used[,c(1:8,17:24)]
+faeces_P_C<- DEM_used[,c(9:24)]
+for (i in c("B_P","B_C","P_C")) {
+  b<- get(paste("faeces",i,sep = "_"))
+  group<- data.frame(ID=colnames(b))
+  group<- separate(group,ID,c("group","Rep"),sep = "_",remove = F)
+  freq<- data.frame(table(group$group))
+  SD<-  data.frame(t(apply(b,1,function(a){tapply(a,group$group,sd)})))
+  colnames(SD) <- paste(colnames(SD), "SD", sep = "_")
+  meanbygroup<-  data.frame(t(apply(b,1,function(a){tapply(a,group$group,mean)})))
+  colnames(meanbygroup) <- paste(colnames(meanbygroup), "mean", sep = "_")
+  dem<- merge(SD,meanbygroup,by="row.names")
+  rownames(dem)<- dem$Row.names
+  dem<- dem[,-1]
+  Pvalue<-c(rep(0,nrow(dem)))
+  FC<-c(rep(0,nrow(dem))) 
+  log2FC<- c(rep(0,nrow(dem)))
+  for(d in 1:nrow(dem)) {
+    if(dem[d, 1] == 0 && dem[d, 2] == 0) {
+      Pvalue[d] <- NA
+      FC[d] <- NA
+    } else {
+      tryCatch({
+        y <- t.test(as.numeric(b[d, 1:freq[1, 2]]), as.numeric(b[d, (1+freq[1, 2]):ncol(b)]))
+        Pvalue[d] <- y$p.value
+        FC[d] <- dem[d, 3] / dem[d, 4]
+      }, error = function(e) {
+        # 在遇到错误时执行的操作，可以是空操作或者输出提示信息
+        cat("Error occurred at row", d, ": Skipping t-test.\n")
+        Pvalue[d] <- NA
+        FC[d] <- NA
+      })
+    }
+    FDR=p.adjust(Pvalue, "BH")
+    
+    mix <- cbind(dem,FC,Pvalue,log2FC)%>%cbind(.,FDR)
+    mix$log2FC<- log2(mix$FC)
+    colnames(mix)<- gsub("_mean","",colnames(mix))
+    
+    mix$change <- as.factor(ifelse(
+      mix$Pvalue < 0.05 & abs(mix$log2FC) > 0.5,
+      ifelse(
+        mix[,3] > mix[,4],
+        paste(colnames(mix)[3], "biased", sep = "_"),paste(colnames(mix)[4], "biased", sep = "_")
+        
+      ),"NOT"
+    )) 
+    mix$Index<- rownames(mix)
+    mix$Group<- i
+    assign(paste(i,"dem",sep = "_"),mix)
+    }
+}
+rownames(B_C_dem) <- NULL
+rownames(B_P_dem) <- NULL
+rownames(P_C_dem) <- NULL
+
+# 使用 dplyr::bind_rows 进行合并
+DEM_all <- bind_rows(B_C_dem[, 5:11], B_P_dem[, 5:11], P_C_dem[, 5:11])
+
+
+table(DEM_all[,c(5,7)])
+# Group
+# change      B_C  B_P  P_C
+# B_biased  588  506    0
+# C_biased  367    0  444
+# NOT      1804 1823 1315
+# P_biased    0  432  969
+
+
+ggplot(DEM_all,aes(x=log2FC,y=-log10(Pvalue),color=change))+
+  geom_point()+
+  scale_color_manual(values=c("B_biased"="#BB849E","C_biased"="#8C90C8","P_biased"='black',"NOT"="grey"))+#确定点的颜色
+  theme_classic()+#修改图片背景
+  theme(axis.text = element_text(size=12),
+        axis.title.y = element_text(size=15),axis.title.x = element_text(size=15),
+        legend.position = "")+
+  ylab('-log10 (PValue)')+
+  xlab('log2 (FoldChange)')+
+   geom_hline(yintercept = -log10(0.05),lty=3,col="black",lwd=0.5)+
+  facet_wrap(~Group,nrow = 1,scales = "free")
+
+ggplot(DEM_all_positive,aes(x=log2FC,y=-log10(Pvalue),color=change))+
+  geom_point()+
+  scale_color_manual(values=c("B_biased"="#BB849E","C_biased"="#8C90C8","P_biased"='black',"NOT"="grey"))+#确定点的颜色
+  theme_classic()+#修改图片背景
+  theme(axis.text = element_text(size=12),
+        axis.title.y = element_text(size=15),axis.title.x = element_text(size=15),
+        legend.position = "")+
+  ylab('-log10 (PValue)')+
+  xlab('log2 (FoldChange)')+
+  geom_hline(yintercept = -log10(0.05),lty=3,col="black",lwd=0.5)+
+  facet_wrap(~Group,nrow = 1,scales = "free")+ggtitle("Positive")
+
+normal_faeces_dem<- rbind(B_C_dem[,c(9,10)],
+                          B_P_dem[,c(9,10)],
+                          P_C_dem[,c(9,10)])%>%distinct()
+
+
+
+for (i in unique(normal_faeces_dem$change)) {
+  a<- normal_faeces_dem[grep(i,normal_faeces_dem$change),]%>%distinct()
+  assign(paste(i,"faeces",sep = "_"),a)
+}
+
+
+
+
+
+intersect_faeces_normal<- list(B=B_biased_faeces$Index,
+                               P=P_biased_faeces$Index,
+                               C=C_biased_faeces$Index)
+ggvenn(intersect_faeces_normal,fill_color=c("B"="#BB849E","C"="#8C90C8","P"="black"),
+       show_percentage = T,show_elements=F,text_size = 5,
+       stroke_color = "white",stroke_size = 1,
+       set_name_size = 5)+
+  theme(legend.position = "none")+ggtitle("Negative")
+
+intersect_faeces_normal_positive<- list(B=B_biased_faeces_positive$Index,
+                                        P=P_biased_faeces_positive$Index,
+                                        C=C_biased_faeces_positive$Index)
+ggvenn(intersect_faeces_normal_positive,fill_color=c("B"="#BB849E","C"="#8C90C8","P"="black"),
+       show_percentage = T,show_elements=F,text_size = 5,
+       stroke_color = "white",stroke_size = 1,
+       set_name_size = 5)+
+  theme(legend.position = "none")+ggtitle("Positive")
+
+DEM_all_1<- DEM_all[order(abs(DEM_all$log2FC),decreasing = T),]
+DEM_all_1<- DEM_all_1[grep("B",DEM_all_1$Group),]
+
+
+intersect_faeces_dem_normal<- data.frame(get.venn.partitions(intersect_faeces_normal))
+colnames(intersect_faeces_dem_normal)[4:6]<- c("set","Protein","count")
+intersect_faeces_dem_normal<- intersect_faeces_dem_normal[intersect_faeces_dem_normal$count!=0,]
+intersect_faeces_dem_normal$set
+used_faeces_metabolis<- intersect_faeces_dem_normal[c(3,5,6),]
+used_faeces_metabolis<- separate(used_faeces_metabolis,set,c("Group",NA,NA),sep = "[)]",remove = FALSE)
+used_faeces_metabolis$Group<- gsub("[(]","",used_faeces_metabolis$Group)
+used_faeces_data <- used_faeces_metabolis %>%
+  select(5:7) %>%
+  separate_rows(Protein, sep = "\t")%>%as.data.frame()
+rownames(used_faeces_data)<- used_faeces_data$Protein
+used_faeces_data<- merge(used_faeces_data[,c(1,3)],used_metabolism,by="row.names")
+rownames(used_faeces_data)<- used_faeces_data$Row.names
+used_faeces_data<- used_faeces_data[order(used_faeces_data$Group),]
+
+name <- data.frame(ID=c("MW0139516N","MEDN0124*024","MEDN2337"))
+heatmap_data<- used_faeces_data[, c(4:7, 9, 10, 12:27)]
+samples <- rep(c('Lactobacillus_johnsonii', 'PBS',"Escherichia_coli"), c(6,6,6))
+
+heat_group<- data.frame(Group=used_faeces_data$Group)
+ra<- rowAnnotation(link = anno_mark(at = which(rownames(heatmap_data) %in% name$ID),
+                                    labels = name$ID, labels_gp = gpar(fontsize = 10)))
+co_group <- c( 'PBS',"Escherichia_coli",'Lactobacillus_johnsonii')
+
+ha <- HeatmapAnnotation(
+  foo = anno_block(
+    gp = gpar(
+      fill = c("#010101","#9395C7","#BD7D9C"),
+      fontsize = 5,
+      fontfamily = "Arial",
+      fontface = "italic",
+      col = "white"), 
+    labels =co_group
+  ),
+  annotation_legend_param = list(labels_gp = gpar(col = "white", fontsize = 5))
+)
+P_C_dem<- merge(P_C_dem,faeces_metabolism[,c(1,3)],by="Index")
+P_C_dem_1<- P_C_dem[order(P_C_dem$FC,decreasing = T),]
+INDEX_1<- P_C_dem_1[c(2,3,5,6,7),]
+P_C_dem_1<- P_C_dem[order(P_C_dem$FC),]
+INDEX_2<- P_C_dem_1[c(3,4,8,11,12),]
+B_P_dem<- merge(B_P_dem,faeces_metabolism[,c(1,3)],by="Index")
+B_P_dem_1<- B_P_dem[order(B_P_dem$FC,decreasing = T),]
+INDEX_3<- B_P_dem[c(4,7,8),]
+INDEX<- data.frame(Index=c(INDEX_1$Index,INDEX_2$Index,INDEX_3$Index,"MW0139516N","MEDN0124*024","MEDP0334","MEDN0656"))
+INDEX1<- merge(INDEX,faeces_metabolism[,c(1,3)],by="Index")%>%distinct()
+heatmap_data_1<- log_faeces[rownames(log_faeces)%in%INDEX1$Index,]
+heatmap_data_1$Index<- rownames(heatmap_data_1)
+heatmap_data_1<- merge(heatmap_data_1,faeces_metabolism[,c(1,3)],by="Index")
+rownames(heatmap_data_1)<- heatmap_data_1$Compounds
+heatmap_data_1<- heatmap_data_1[,-c(1,26)]
+heatmap_data_1<- t(apply(heatmap_data_1, 1, scale))
+colnames(heatmap_data_1)<- colnames(log_faeces)
+
+
+heatmap_data_1[heatmap_data_1>2]=2
+heatmap_data_1[heatmap_data_1 < -2]=-2
+pheatmap::pheatmap(((heatmap_data_1[,-c(5,8,11,13,23,24)])),
+                   color = colorRampPalette(c("#336699", "white", "#CC3333"))(50),
+                   show_column_names = TRUE,
+        show_row_names = TRUE, #不展示基因名称
+        cluster_rows = F, scale = "row")
+
+experdata_t<- t(heatmap_data[,-c(13,14,20,22)])
+col_dist = dist(experdata_t)
+
+hclust_1 <- hclust(col_dist)
+manual_order = c( "P_1", "P_2", "P_3", "P_4" ,"P_5", "P_6",
+                  "C_1", "C_2", "C_3", "C_4", "C_5", "C_7",
+                  
+                  "B_1", "B_2", "B_3", "B_4", "B_6", "B_7")
+
+dend = reorder(as.dendrogram(hclust_1), wts=order(match(manual_order, rownames(experdata_t))))
+
+col_cluster <- as.hclust(dend)
+annotation_col = data.frame(
+  sample=rep(c('Lactobacillus_johnsonii', 'PBS',"Escherichia_coli"), c(6,6,6))
+)
+anno.color=list(sample=c("black","#8C90C8","#BB849E"))
+row.names(annotation_col) <- colnames(heatmap_data[,-c(13,14,20,22)])
+pheatmap( heatmap_data[,-c(13,14,20,22)], 
+          cluster_rows = F,show_rownames = F,show_colnames = F,
+          cluster_cols =col_cluster,
+          col = colorRampPalette(c("navy","white","firebrick3"))(100),
+          annotation_col = annotation_col, #列注释信息
+          row_split = row_annotaion_list$Group,#行截断（按照pathway，不像之前随机）,
+          annotation_names_row = F,#不显示行注释信息
+          annotation_names_col = F ,#不显示列注释信息
+          column_title = NULL,#不显示列标题
+          row_title = NULL)+ rowAnnotation(link = anno_mark(at = which(rownames(heatmap_data) %in% name$ID),
+                                                                  
+                                                                  labels = name$ID, labels_gp = gpar(fontsize = 10)))
+
+
+name <- data.frame(ID=c("MW0139516N","MEDN0124*024","MEDN2337"))
+
+heat + rowAnnotation(link = anno_mark(at = which(rownames(heatmap_data) %in% name$ID),
+                                      
+                                      labels = name$ID, labels_gp = gpar(fontsize = 10)))
+
+
+colnames(used_faeces_data)[1]<- "Index"
+metabolism_list<- merge(used_faeces_data[,c(1,2)],faeces_metabolism[,c(1,3,41,42)],by="Index")%>%arrange(Group)
+metabolism_list<- metabolism_list[,c(5,4,3,2,1)]
+write_xlsx(metabolism_list, "G:/crc_wl/result/medium_data/output.xlsx")
+oringe_list<- read.table("G:/crc_wl/result/medium_data/MetOrigin_20240411211141/02_Origin_Analysis/Metabolites_Origin.csv",
+                         sep = ",",header = T)
+colnames(oringe_list)[3]<- "Compounds"
+oringe_microbia<- oringe_list[grep("Microbiota",oringe_list$Origin),]
+
+
+
+DEM_all_list<- DEM_all[grep("biased",DEM_all$change),]
+USED_list<- merge(DEM_all_list,faeces_metabolism[,c(1,3,41,42)],by="Index")
+B_biased_used<- USED_list[USED_list$change=="B_biased",]
+B_biased_used<- B_biased_used[,c(10,9,8)]
+all_deg<- USED_list[,c(10,9,8)]
+
+# write.table(all_deg,"G:/crc_wl/result/medium_data/all_deg.txt",sep = "\t",col.names = T,row.names = F,quote = F)
+# write.table(B_biased_used,"G:/crc_wl/result/medium_data/b_biased.txt",sep = "\t",col.names = T,row.names = F,quote = F)
+
+
+b_origin<- read_excel("G:/crc_wl/result/medium_data/b_origin.xlsx")
+b_origin<- separate_rows(b_origin,Origin,sep = ";")
+unique(b_origin$Origin)
+Other<- b_origin[b_origin$Origin=="Unknown",]
+Drug<- b_origin[grep("Drug",b_origin$Origin),]
+Host<- b_origin[b_origin$Origin=="Host",]
+Microbiota<- b_origin[grep("Microbiota",b_origin$Origin),,]
+Food<- b_origin[grep("Food",b_origin$Origin),]
+Environment<- b_origin[b_origin$Origin=="Environment",]
+Food<- b_origin[b_origin$Origin=="Food related",]
+Drug<- b_origin[b_origin$Origin=="Drug related",]
+Host_only<- Host[!Host$Name%in%Microbiota$Name,]
+Microbiota_only<- Microbiota[!Microbiota$Name%in%Host$Name,]
+Microbiota_host<- Microbiota[Microbiota$Name%in%Host$Name,]
+origin_number<- data.frame(Class=c("Drug","Other","Host","Microbiota","Food related","Co-metabolis"),
+                           No=c(nrow(Drug),nrow(Other),nrow(Host_only),nrow(Microbiota_only),nrow(Food),nrow(Microbiota_host)))
+
+
+origin_number <- origin_number %>%
+  mutate(Percentage = No / sum(No) * 100)
+
+# 绘制饼图
+ggplot(origin_number, aes(x = "", y = Percentage, fill = Class)) +
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar("y", start = 0) +
+  theme_void() + # 去除背景
+  theme(legend.position = "top") +scale_fill_manual(values=c("#7DABD0","#FBC1AD","#CFE7EA","#DBDEBA","#FFDF6F","#DAB3DA"))+
+  labs(title = "", fill = "Class") +
+  geom_text(aes(label = paste0(round(Percentage, 1), "%")), 
+            position = position_stack(vjust = 0.5))
+KEGG_plot<- read_excel("G:/crc_wl/result/metabolism/kegg.xlsx")
+
+ggplot(KEGG_plot, aes(-log10(Pvalue),Name,fill=Class )) +
+  geom_bar(stat = "identity") +theme_bw()+
+  theme(axis.text = element_text(size=12),
+        axis.title.y = element_text(size=15),axis.title.x = element_text(size=15),
+        legend.position = "none")+scale_fill_manual(values=c("Co-metabolis"="#7DABD0","Host"="#DBDEBA","Microbiota"="#FFDF6F"))
+
+
+
+species_abundance<- read.table("G:/crc_wl/result/Intermediate result/metagenomics/abundance/species_abundance.txt",header = T,row.names = 1)
+Lactobacillus_johnsonii<- species_abundance[rownames(species_abundance)=="Lactobacillus_johnsonii",]
+a<- DEM_used[rownames(DEM_used)=="MW0139516N",]
+b<- DEM_used[rownames(DEM_used)=="MEDN0124*024",]
+c<- DEM_used[rownames(DEM_used)=="MEDP0334",]
+d<- DEM_used[rownames(DEM_used)=="MEDN0656",]
+colnames(Lactobacillus_johnsonii)<- colnames(b)
+correltaion<- rbind(a,b,c,d,Lactobacillus_johnsonii)
+correltaion$group<- rownames(correltaion)
+df_long <- t(correltaion)%>%data.frame()
+df_long<- df_long[-25,]
+df_long$MEDN0124.024<- as.numeric(df_long$MEDN0124.024)
+df_long$MW0139516N<- as.numeric(df_long$MW0139516N)
+df_long$MEDP0334<- as.numeric(df_long$MEDP0334)
+df_long$MEDN0656<- as.numeric(df_long$MEDN0656)
+
+df_long$Lactobacillus_johnsonii<- as.numeric(df_long$Lactobacillus_johnsonii)
+cor_test <- cor.test( df_long$Lactobacillus_johnsonii,df_long$MW0139516N)
+
+correlation <- cor_test$estimate
+p_value <- cor_test$p.value
+
+print(paste("相关系数: ", correlation))
+print(paste("显著性: ", p_value))
+ggplot(df_long,aes(y=df_long$Lactobacillus_johnsonii,x=df_long$MW0139516N))+
+  geom_point() +  # 绘制散点图
+  geom_smooth(method = "lm", col = "blue")+theme_classic()+
+  labs(title = paste("r2:", round(correlation, 2), "p:",round(p_value, digits = 5)),
+                                                x = "",
+                                                y = "") +theme(axis.text = element_text(size=12),
+                                                               axis.title.y = element_text(size=15),axis.title.x = element_text(size=15),
+                                                               legend.position = "none")
+
+cor_test <- cor.test( df_long$Lactobacillus_johnsonii,df_long$MW0139516N)
+
+correlation <- cor_test$estimate
+p_value <- cor_test$p.value
+
+print(paste("相关系数: ", correlation))
+print(paste("显著性: ", p_value))
+ggplot(df_long,aes(y=df_long$Lactobacillus_johnsonii,x=df_long$MW0139516N))+
+  geom_point() +  # 绘制散点图
+  geom_smooth(method = "lm", col = "blue")+theme_classic()+
+  labs(title = paste("r2:", round(correlation, 2), "p:",round(p_value, digits = 5)),
+       x = "",
+       y = "") +theme(axis.text = element_text(size=12),
+                      axis.title.y = element_text(size=15),axis.title.x = element_text(size=15),
+                      legend.position = "none")
+cor_test <- cor.test( df_long$Lactobacillus_johnsonii,df_long$MEDN0124.024)
+
+correlation <- cor_test$estimate
+p_value <- cor_test$p.value
+
+print(paste("相关系数: ", correlation))
+print(paste("显著性: ", p_value))
+ggplot(df_long,aes(y=df_long$Lactobacillus_johnsonii,x=df_long$MEDN0124.024))+
+  geom_point() +  # 绘制散点图
+  geom_smooth(method = "lm", col = "blue")+theme_classic()+
+  labs(title = paste("r2:", round(correlation, 2), "p:",round(p_value, digits = 5)),
+       x = "",
+       y = "") +theme(axis.text = element_text(size=12),
+                      axis.title.y = element_text(size=15),axis.title.x = element_text(size=15),
+                      legend.position = "none")
+
+cor_test <- cor.test( df_long$Lactobacillus_johnsonii,df_long$MEDP0334)
+
+correlation <- cor_test$estimate
+p_value <- cor_test$p.value
+
+print(paste("相关系数: ", correlation))
+print(paste("显著性: ", p_value))
+ggplot(df_long,aes(y=df_long$Lactobacillus_johnsonii,x=df_long$MEDP0334))+
+  geom_point() +  # 绘制散点图
+  geom_smooth(method = "lm", col = "blue")+theme_classic()+
+  labs(title = paste("r2:", round(correlation, 2), "p:",round(p_value, digits = 5)),
+       x = "",
+       y = "") +theme(axis.text = element_text(size=12),
+                      axis.title.y = element_text(size=15),axis.title.x = element_text(size=15),
+                      legend.position = "none")
+cor_test <- cor.test( df_long$Lactobacillus_johnsonii,df_long$MEDN0656)
+
+correlation <- cor_test$estimate
+p_value <- cor_test$p.value
+
+print(paste("相关系数: ", correlation))
+print(paste("显著性: ", p_value))
+ggplot(df_long,aes(y=df_long$Lactobacillus_johnsonii,x=df_long$MEDN0656))+
+  geom_point() +  # 绘制散点图
+  geom_smooth(method = "lm", col = "blue")+theme_classic()+
+  labs(title = paste("r2:", round(correlation, 2), "p:",round(p_value, digits = 5)),
+       x = "",
+       y = "") +theme(axis.text = element_text(size=12),
+                      axis.title.y = element_text(size=15),axis.title.x = element_text(size=15),
+                      legend.position = "none")
+
+a<- data.frame(Index=c("MW0139516N","MEDN0124*024","MEDP0334","MEDN0656"))
+used_plot<- log_faeces[rownames(log_faeces)%in%a$Index,]
+library(tibble)
+used_plot<- used_plot %>% rownames_to_column(var = "Index") %>% gather(key = "Sample",value = "value", -"Index")
+used_plot<- separate(used_plot,Sample,c("Group",NA),sep = "_",remove = F)
+used_plot<- merge(used_plot,faeces_metabolism[,c(1,3)],by="Index")
+used_plot$Group<- factor(used_plot$Group,levels = c("P","C","B"))
+
+ggplot(used_plot, aes(x = Group, y = value,color=Group)) +
+  geom_boxplot(width=0.5,outlier.colour = NA) +  # 设置点的颜色
+  stat_boxplot(geom = "errorbar",width=0.25)  +
+  ggsignif::geom_signif(
+    comparisons = list(c("P","C"),c("B","C"),c("B","P")), 
+    map_signif_level = F,
+    test = t.test,
+    step_increase = 0.1,
+    color = "black")+
+  scale_color_manual(values = c("P"="black","B"="#BB849E","C"="#8C90C8")) +
+  theme_classic()+
+  theme(legend.position = "none", 
+        plot.title = element_text(size = 15),
+        axis.title.x = element_text(size = 14),axis.title.y = element_text(size = 14),
+        axis.text = element_text(size = 11))+facet_wrap(~Compounds,scales = "free",nrow=1)+	
+  xlab("")+ylab("Relative concentration")
