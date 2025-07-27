@@ -1,1 +1,64 @@
+#kneaddata
+#!/bin/bash
+#BATCH --job-name=filter_mouse
+#SBATCH -p v6_384
+#SBATCH -N 1
+#SBATCH -n 20   ##线程数目
+#SBATCH --error=%j.err
+#SBATCH --output=%j.out
+source activate kneaddata && cd /public1/home/t6s000135/project/CRC/result/filter && kneaddata -i1 1-4.fq.1.gz -i2 1-4.fq.2.gz 
+-o /public1/home/t6s000135/project/CRC/result/kneaddata/ -v --reference-db /public1/home/t6s000135/reference/mouse/ --trimmomatic ~/software-t6s000135/Trimmomatic-0.39 
+--trimmomatic-options 'SLIDINGWINDOW:4:20 MINLEN:50' -t 20 --bowtie2-options '--very-sensitive --dovetail' --remove-intermediate-output
 
+#cat
+#!/bin/bash
+#BATCH --job-name=filter_mouse
+#SBATCH -p v6_384
+#SBATCH -N 1
+#SBATCH -n 20   ##线程数目
+#SBATCH --error=%j.err
+#SBATCH --output=%j.out
+cd /public1/home/t6s000135/project/CRC/result/kneaddata && cat 1-4_R1_kneaddata_paired_1.fastq 1-4_R1_kneaddata_paired_2.fastq 
+1-4_R1_kneaddata_unmatched_1.fastq 1-4_R1_kneaddata_unmatched_2.fastq | awk '{if(NR%4==1) print "@"NR; else print $0}'> 1-4_R1_kneaddata_paired_1_all.fastq
+
+#!/bin/bash
+#BATCH --job-name=filter_mouse
+#SBATCH -p v6_384
+#SBATCH -N 1
+#SBATCH -n 20   ##线程数目
+#SBATCH --error=%j.err
+#SBATCH --output=%j.out
+source activate kraken2_Bracken && cd /public1/home/t6s000135/project/ovary_aging/mouse/result/kneaddata  && kraken2 --threads 20 --db ~/kraken_database/ 
+--gzip-compressed 1-4_kneaddata_paired_1_all.fastq --report ../kracken_report/FP180001074TR_L01_307_kraken2.report
+
+#brakcen
+#!/bin/bash
+#BATCH --job-name=filter_mouse
+#SBATCH -p v6_384
+#SBATCH -N 1
+#SBATCH -n 2   ##线程数目
+#SBATCH --error=%j.err
+#SBATCH --output=%j.out
+source activate kraken2_Bracken && cd /public1/home/t6s000135/project/CRC/result/kraken2_report && bracken 
+-d  ~/kraken_database/ -i 1-4_kraken2_report -o ../braken_report/1-4_bracken -w ../braken_report/1-4_report -r 150 -l S -t 2
+
+#metaphlan4
+#!/bin/bash
+#BATCH --job-name=filter_mouse
+#SBATCH -p v6_384
+#SBATCH -N 1
+#SBATCH -n 20   ##线程数目
+#SBATCH --error=%j.err
+#SBATCH --output=%j.out
+source activate metaphlan4 &&cd /public1/home/t6s000135/project/CRC/result/kneaddata && metaphlan 1-4_R1_kneaddata_paired_1_all.fastq 
+--input_type fastq -t rel_ab_w_read_stats --bowtie2db ~/metaphlan_database -o ../metaphlan/1-4_metaphlan.txt
+
+#humman3
+#!/bin/bash
+#BATCH --job-name=filter_mouse
+#SBATCH -p v6_384
+#SBATCH -N 1
+#SBATCH -n 20   ##线程数目
+#SBATCH --error=%j.err
+#SBATCH --output=%j.out
+source activate metaphlan4 &&cd /public1/home/t6s000135/project/CRC/result/kneaddata && humann --threads 20 --input 1-4_R1_kneaddata_paired_1_all.fastq --output ../humann3/1-4
