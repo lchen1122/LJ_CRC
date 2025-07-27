@@ -52,6 +52,9 @@ source activate kraken2_Bracken && cd /public1/home/t6s000135/project/CRC/result
 #SBATCH --output=%j.out
 source activate metaphlan4 &&cd /public1/home/t6s000135/project/CRC/result/kneaddata && metaphlan 1-4_R1_kneaddata_paired_1_all.fastq 
 --input_type fastq -t rel_ab_w_read_stats --bowtie2db ~/metaphlan_database -o ../metaphlan/1-4_metaphlan.txt
+cd /public1/home/t6s000135/project/CRC/result/kneaddata && merge_metaphlan_tables.py metaphlan/*.txt >merged_abundance_table.txt
+cd /public1/home/t6s000135/project/CRC/result/kneaddata && grep -E '(s__)|(clade_name)' merged_abundance_table.txt |grep -v 't__'|sed 's/^.*s__//g'|awk '{$2=null;print}'|sed 's/\ \ /\ /g'|sed 's/\ /\t/g' 
+> merged_abundance_table_species.txt
 
 #humman3
 #!/bin/bash
