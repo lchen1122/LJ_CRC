@@ -18,9 +18,9 @@ otu_sperm<- otu_sperm[grep("Bacteria",otu_sperm$taxonomy),]
 otu_sperm_used<- otu_sperm
 otu_sperm_used$OTU.ID<- paste("OTU",otu_sperm_used$OTU.ID,sep = "_")
 row.names(otu_sperm_used)<- otu_sperm_used$OTU.ID
-otu_sperm_used<- otu_sperm_used[-c(1,26)]
+otu_sperm_used<- otu_sperm_used[-c(1,20)]
 
-taxonomy_table<- otu_sperm[,c(1,26)] 
+taxonomy_table<- otu_sperm[,c(1,20)] 
 taxonomy_table$OTU.ID<- paste("OTU",taxonomy_table$OTU.ID,sep = "_")
 rownames(taxonomy_table)<- taxonomy_table$OTU.ID
 taxonomy_table<- separate(taxonomy_table,"taxonomy"
@@ -172,5 +172,3 @@ print(layout)
 plot.igraph(g, layout = layout, vertex.label = V(g)$name, vertex.label.cex = 0.7, vertex.label.color = "black", 
             vertex.color = V(g)$color, vertex.frame.color = "black", vertex.size = V(g)$size,
             edge.arrow.size = 0, edge.width = E(g)$width, edge.color = E(g)$color, edge.curved = TRUE)
-
-
